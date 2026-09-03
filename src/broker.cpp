@@ -62,44 +62,61 @@ void Broker::run() {
     } 
 }
 void Broker::handle_client(int client_fd){ 
-     char buffer[1024] {};
-    // Start of receive handling
-    ssize_t bytes_received = recv(
-            client_fd, 
-            buffer, 
-            sizeof(buffer) - 1,
-            0
-            );
-
-    if (bytes_received == -1) {
-        std::cerr << "Failed to receive data\n";
-        close(client_fd);
-        return;
-    }
-
-    if (bytes_received == 0) {
-        close(client_fd);
-        return;
-    }
-    // Start of send handling
-    const char* response = "Message received\n";
-
-    ssize_t bytes_sent = send(
-            client_fd,
-            response,
-            std::strlen(response),
-            0
-            );
-    
-    if (bytes_sent == -1) {
-        std::cerr << "Failed to send data\n";
-        close(client_fd);
-        return;
-    }
-
     std::cout << "Client connected with fd: " << client_fd << '\n';
-    std::cout << "Received: " << buffer << '\n';
+    char buffer[1024]{};
+    while (true) {
+        // Start of receive handling
+        ssize_t bytes_received = recv(
+                client_fd, 
+                buffer, 
+                sizeof(buffer) - 1,
+                0
+                );
 
+        if (bytes_received == -1) {
+            std::cerr << "Failed to receive data\n";
+            break;
+        }
+
+        if (bytes_received == 0) {
+            break;
+        }
+        buffer[bytes_received] = '\0';
+        // Start of send handling
+        const char* response = "Message received\n";
+
+        if (!send_all(
+                client_fd,
+                response,
+                std::strlen(response)
+        )) {
+            break;
+        }
+
+        std::cout << "Received: " << buffer << '\n';
+    }
     close(client_fd);
 }
 
+// Continuously sends until all bytes are sent
+bool Broker::send_all(int client_fd, const char* data, std::size_t length){
+    std::size_t total_len = 0;
+    while (total_len < length) {
+        ssize_t bytes_sent = send(
+            client_fd,
+            data + total_len,
+            length - total_len,
+            0
+        );
+        if (bytes_sent == -1) {
+            std::cerr << "Failed to send data\n";
+            return false;
+        }   
+        if (bytes_sent == 0) {
+            std::cerr << "Connection closed while sending bytes\n";
+            return false;
+        }
+        total_len += bytes_sent;
+    }
+    return true;
+}
