@@ -1,3 +1,4 @@
+#include <string>
 #include <cstring>
 #include <thread>
 #include <unistd.h>
@@ -64,6 +65,7 @@ void Broker::run() {
 void Broker::handle_client(int client_fd){ 
     std::cout << "Client connected with fd: " << client_fd << '\n';
     char buffer[1024]{};
+    std::string pending;
     while (true) {
         // Start of receive handling
         ssize_t bytes_received = recv(
@@ -81,19 +83,21 @@ void Broker::handle_client(int client_fd){
         if (bytes_received == 0) {
             break;
         }
-        buffer[bytes_received] = '\0';
-        // Start of send handling
-        const char* response = "Message received\n";
-
-        if (!send_all(
-                client_fd,
-                response,
-                std::strlen(response)
-        )) {
-            break;
+        pending.append(buffer, bytes_received);
+        // Append one recv to the "pending" stream
+        for (
+            std::size_t place = pending.find('\n'); 
+            place != std::string::npos; 
+            place = pending.find('\n')
+            ) {
+            std::string message = pending.substr(0, place);
+            if (!handle_command(client_fd, message)){
+                close(client_fd);
+                return;
+            }
+            pending.erase(0, place + 1);
         }
-
-        std::cout << "Received: " << buffer << '\n';
+        
     }
     close(client_fd);
 }
@@ -118,5 +122,40 @@ bool Broker::send_all(int client_fd, const char* data, std::size_t length){
         }
         total_len += bytes_sent;
     }
+    return true;
+}
+
+bool Broker::handle_command(int client_fd, const std::string& call){
+    std::size_t space = call.find(' ');
+    std::string command = 
+        (space == std::string::npos) 
+        ? call 
+        : call.substr(0, space);
+    if (command == "PING") {
+        return handle_ping(client_fd, call);
+    } else if (command == "SUBSCRIBE") {
+        return handle_subscribe(client_fd, call);
+    } else if (command == "PUBLISH") {
+        return handle_publish(client_fd, call);
+    } else {
+        std::cerr << "Unknown command\n";
+        return true;
+    }
+}
+bool Broker::handle_ping(int client_fd, const std::string&){
+    const char* pong = "PONG\n";
+    if (!send_all(client_fd,
+                  pong,
+                  std::strlen(pong)
+                  )) {
+        std::cerr << "Ping could not be sent\n";
+        return false;
+    } 
+    return true;
+}
+bool Broker::handle_subscribe(int client_fd, const std::string& call){
+    std
+}
+bool Broker::handle_publish(int client_fd, const std::string& call){
     return true;
 }
