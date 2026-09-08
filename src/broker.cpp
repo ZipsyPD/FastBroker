@@ -1,15 +1,20 @@
-#include <string>
-#include <cstring>
 #include <thread>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include "broker/broker.hpp"
 #include <iostream>
 
-Broker::Broker(int port) 
-    : port_(port),
-      server_fd_(-1) {
+#include <unordered_map>
+#include <vector>
+#include <mutex>
+#include <string>
+#include <cstring>
+
+#include "broker/broker.hpp"
+
+Broker::Broker(int port): 
+    port_(port),
+    server_fd_(-1) {
     }
 
 void Broker::run() {
@@ -92,6 +97,7 @@ void Broker::handle_client(int client_fd){
             ) {
             std::string message = pending.substr(0, place);
             if (!handle_command(client_fd, message)){
+                handle_disconnect(client_fd);
                 close(client_fd);
                 return;
             }
@@ -99,6 +105,7 @@ void Broker::handle_client(int client_fd){
         }
         
     }
+    handle_disconnect(client_fd);
     close(client_fd);
 }
 
@@ -154,8 +161,114 @@ bool Broker::handle_ping(int client_fd, const std::string&){
     return true;
 }
 bool Broker::handle_subscribe(int client_fd, const std::string& call){
-    std
-}
-bool Broker::handle_publish(int client_fd, const std::string& call){
+    /* Can use .lock() and .unlock() here but was recommended
+     * not to use it to not have to deal with forgetting about
+     * locking */
+    std::size_t space = call.find(' ');
+
+    if (space == std::string::npos){
+        const char* error = 
+            "Incorrect usage of subscribe: should be (SUBSCRIBE topic)\n";
+        return send_all(
+                client_fd,
+                error,
+                std::strlen(error)
+                );
+    }
+
+    std::string topic = call.substr(space + 1);
+    if (topic.empty()) {
+        const char* error = 
+            "Incorrect usage of subscribe: should be (SUBSCRIBE topic)\n";
+
+        return send_all(
+                client_fd,
+                error,
+                std::strlen(error)
+                );
+    }
+
+    // Add client to the topic's subscribe set
+    {
+        std::lock_guard<std::mutex> lock(subscribers_mutex_);
+        subscribers_[topic].insert(client_fd);
+    }
+    std::string confirmation = "Subscribed to: " + topic + "\n";
+
+    // P.S I hate this nvim/treesitter indentation change
+    if (!send_all(client_fd,
+                // Just learned this gives us the underlying char ptr!
+                confirmation.data(),
+                confirmation.size()
+                )) {
+        std::cerr << "Client subscribed but confirmation not sent";
+        return false;
+    }
     return true;
+}
+
+void Broker::remove_client(int client_fd){
+    {
+        std::lock_guard<std::mutex> lock(subscribers_mutex_);
+
+        for (auto& [topic, subscribers] : subscribers_) {
+            subscribers.erase(client_fd);
+        }
+    }
+}
+
+bool Broker::handle_publish(int client_fd, const std::string& call){
+    std::size_t first_space = call.find(' ');
+
+    if (first space == std::string::npos){
+        const char* error = 
+            "Incorrect usage of publish: should be "
+            "(PUBLISH topic message)\n";
+
+        return send_all(
+                client_fd,
+                error,
+                std::strlen(error)
+                );
+    }
+
+    std::size_t second_space = 
+        call.find(' ', first_space + 1);
+
+    if (second_space == std::string::npos) {
+        const char* error = 
+            "Incorrect usage of publish: should be "
+            "(PUBLISH topic message)\n";
+
+        return send_all(
+                client_fd,
+                error,
+                std::strlen(error)
+                );
+    }
+
+    std::string topic = call.substr(
+            first_space + 1,
+            second_space - first_space - 1
+            );
+
+    std::string payload =
+        call.substr(second_space + 1);
+
+    if (topic.empty() || payload.empty()) {
+        const char* error = 
+            "Incorrect usage of publish: should be "
+            "(PUBLISH topic message)\n";
+
+        return send_all(
+                client_fd,
+                error,
+                std::strlen(error)
+                )
+    };
+
+    {
+        std::lock_guard<std::mutex> lock(subscribers_mutex_);
+
+    }
 }
