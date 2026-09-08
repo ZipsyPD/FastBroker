@@ -145,7 +145,15 @@ bool Broker::handle_command(int client_fd, const std::string& call){
     } else if (command == "PUBLISH") {
         return handle_publish(client_fd, call);
     } else {
-        std::cerr << "Unknown command\n";
+        std::string unknown = 
+            "Unknown command. Available commands are (PUBLISH _ _, PING, SUBSCRIBE _)\n";
+        if (!send_all(
+                    client_fd,
+                    unknown.data(),
+                    unknown.size()
+                    ) ) {
+            std::cerr << "Error handling client sending";
+        }
         return true;
     }
 }
@@ -207,7 +215,7 @@ bool Broker::handle_subscribe(int client_fd, const std::string& call){
     return true;
 }
 
-void Broker::remove_client(int client_fd){
+void Broker::handle_disconnect(int client_fd){
     {
         std::lock_guard<std::mutex> lock(subscribers_mutex_);
 
@@ -220,7 +228,7 @@ void Broker::remove_client(int client_fd){
 bool Broker::handle_publish(int client_fd, const std::string& call){
     std::size_t first_space = call.find(' ');
 
-    if (first space == std::string::npos){
+    if (first_space == std::string::npos){
         const char* error = 
             "Incorrect usage of publish: should be "
             "(PUBLISH topic message)\n";
@@ -264,11 +272,32 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
                 client_fd,
                 error,
                 std::strlen(error)
-                )
-    };
+                );
+    }
+    std::string outgoing = "MESSAGE " + topic + " " + payload + "\n";
+    std::vector<int> recipients;
 
     {
         std::lock_guard<std::mutex> lock(subscribers_mutex_);
 
+        auto it = subscribers_.find(topic);
+
+        if (it != subscribers_.end()) {
+            recipients.insert(
+                recipients.end(),
+                it->second.begin(),
+                it->second.end()
+            );
+        }
     }
+    for (int recipient_fd : recipients) {
+        if (!send_all(
+                recipient_fd,
+                outgoing.data(),
+                outgoing.size()
+            )) {
+            handle_disconnect(recipient_fd);
+        }
+    }
+    return true;
 }
