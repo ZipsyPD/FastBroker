@@ -4,6 +4,9 @@
 #include <sys/socket.h>
 #include <iostream>
 
+#include <memory>
+#include <queue>
+#include <condition_variable>
 #include <unordered_map>
 #include <vector>
 #include <mutex>
@@ -58,13 +61,29 @@ void Broker::run() {
             std::cerr << "Client failed to be accepted \n";
             continue;
         }
-        std::thread worker(
+
+        auto state = std::make_shared<ClientState>();
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex_);
+            clients_[client_fd] = state;
+        }
+
+        std::thread receiver(
                 &Broker::handle_client,
                 this,
                 client_fd
                 );
+       
+        std::thread sender(
+                &Broker::sender_loop,
+                this,
+                client_fd,
+                state
+                );
 
-        worker.detach();
+        receiver.detach();
+        sender.detach();
+
     } 
 }
 void Broker::handle_client(int client_fd){ 
@@ -283,21 +302,64 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
         auto it = subscribers_.find(topic);
 
         if (it != subscribers_.end()) {
-            recipients.insert(
-                recipients.end(),
-                it->second.begin(),
-                it->second.end()
-            );
+            for (int fd: it->second) {
+                recipients.push_back(recipient_fd);
+            }
         }
     }
-    for (int recipient_fd : recipients) {
-        if (!send_all(
-                recipient_fd,
-                outgoing.data(),
-                outgoing.size()
-            )) {
-            handle_disconnect(recipient_fd);
+    /* Changing this to a model of adding to a queue and handing
+     * it off to a thread so that it can be modified in parallel */
+    for (int recipient_fd: recipients) {
+        std::shared_ptr<ClientState> state;
+
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex_);
+            
+            auto it = client_.find(recipient_fd);
+
+            if(it == clients_.end()) {
+                continue;
+            }
+
+            state = it->second;
         }
+        
+        /* This lock here is needed for the publisher pushing in,
+         * sender popping, and disconnect setting disconnect to false */
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->outbound.push(outgoing);
+        }
+
+        state->cv.notify_one();
     }
     return true;
+}
+
+void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
+    while (true) {
+        std::unique_lock<std::mutex> lock(state->mutex);
+
+        state->cv.wait(lock, [&] {
+                return !state->outbound.empty()
+                    || !state->connected;
+                    });
+
+        if (!state->connected && state->outbound.empty()) {
+            break;
+        }
+
+        std::string message = state->outbound.front();
+        state->outbound.pop();
+
+        lock.unlock;
+
+        if (!send_all(
+                    client_fd,
+                    message.data(),
+                    message.size()
+                    )) {
+            break;
+        }
+    }
 }
