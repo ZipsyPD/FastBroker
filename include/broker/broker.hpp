@@ -18,6 +18,8 @@ private:
     struct ClientState {
         // Messages waiting to be sent to client
         std::queue<std::string> outbound;
+        // Backpressure buffer
+        std::size_t queued_bytes = 0;
         std::mutex mutex;
         /* Enables thread sleeping so that the 
          * sleeper can wake up and saves CPU time! */
@@ -25,6 +27,10 @@ private:
         // When client disconnects we just turn this false
         bool connected = true;
     };
+
+    // Max queue byte limit
+    static constexpr std::size_t MAX_QUEUED_BYTES = 1024 * 1024;
+
     // Holding client->clientState pairs
     std::unordered_map<int, std::shared_ptr<ClientState>> clients_;
     std::mutex clients_mutex_;

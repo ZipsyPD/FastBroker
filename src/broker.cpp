@@ -168,26 +168,15 @@ bool Broker::handle_command(int client_fd, const std::string& call){
     } else {
         std::string unknown = 
             "Unknown command. Available commands are (PUBLISH _ _, PING, SUBSCRIBE _)\n";
-        if (!send_all(
-                    client_fd,
-                    unknown.data(),
-                    unknown.size()
-                    ) ) {
-            std::cerr << "Error handling client sending";
-        }
-        return true;
+        return enqueue_message(client_fd, unknown);    
     }
 }
 bool Broker::handle_ping(int client_fd, const std::string&){
-    const char* pong = "PONG\n";
-    if (!send_all(client_fd,
-                  pong,
-                  std::strlen(pong)
-                  )) {
-        std::cerr << "Ping could not be sent\n";
-        return false;
-    } 
-    return true;
+    /* Learning about r and l values here:
+     * this works because we are saying enqueue takes
+     * a const variable so we can put a short lived
+     * tempoerary in the function call */
+    return enqueue_message(client_fd, "PONG\n");  
 }
 bool Broker::handle_subscribe(int client_fd, const std::string& call){
     /* Can use .lock() and .unlock() here but was recommended
@@ -196,24 +185,17 @@ bool Broker::handle_subscribe(int client_fd, const std::string& call){
     std::size_t space = call.find(' ');
 
     if (space == std::string::npos){
-        const char* error = 
-            "Incorrect usage of subscribe: should be (SUBSCRIBE topic)\n";
-        return send_all(
-                client_fd,
-                error,
-                std::strlen(error)
+        return enqueue_message(
+                client_fd, 
+                "Incorrect usage of subscribe: should be (SUBSCRIBE topic)\n"
                 );
     }
 
     std::string topic = call.substr(space + 1);
     if (topic.empty()) {
-        const char* error = 
-            "Incorrect usage of subscribe: should be (SUBSCRIBE topic)\n";
-
-        return send_all(
+        return enqueue_message(
                 client_fd,
-                error,
-                std::strlen(error)
+                "Incorrect usage of subscribe: should be (SUBSCRIBE topic)\n"
                 );
     }
 
@@ -224,12 +206,7 @@ bool Broker::handle_subscribe(int client_fd, const std::string& call){
     }
     std::string confirmation = "Subscribed to: " + topic + "\n";
 
-    // P.S I hate this nvim/treesitter indentation change
-    if (!send_all(client_fd,
-                // Just learned this gives us the underlying char ptr!
-                confirmation.data(),
-                confirmation.size()
-                )) {
+    if (!enqueue_message(client_fd, confirmation)) {
         std::cerr << "Client subscribed but confirmation not sent";
         return false;
     }
@@ -264,7 +241,7 @@ void Broker::handle_disconnect(int client_fd){
     {
         std::lock_guard<std::mutex> lock(subscribers_mutex_);
 
-        for(auto& [topic, subscribers] : subscribers_) {
+        for(auto& [_, subscribers] : subscribers_) {
             subscribers.erase(client_fd);
         }
     }
@@ -274,30 +251,20 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
     std::size_t first_space = call.find(' ');
 
     if (first_space == std::string::npos){
-        const char* error = 
-            "Incorrect usage of publish: should be "
-            "(PUBLISH topic message)\n";
-
-        return send_all(
+        return enqueue_message(
                 client_fd,
-                error,
-                std::strlen(error)
-                );
+                "Incorrect usage of publish: should be "
+                "(PUBLISH topic message)\n");
     }
 
     std::size_t second_space = 
         call.find(' ', first_space + 1);
 
     if (second_space == std::string::npos) {
-        const char* error = 
-            "Incorrect usage of publish: should be "
-            "(PUBLISH topic message)\n";
-
-        return send_all(
+        return enqueue_message(
                 client_fd,
-                error,
-                std::strlen(error)
-                );
+                "Incorrect usage of publish: should be "
+                "(PUBLISH topic message)\n");
     }
 
     std::string topic = call.substr(
@@ -309,15 +276,10 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
         call.substr(second_space + 1);
 
     if (topic.empty() || payload.empty()) {
-        const char* error = 
-            "Incorrect usage of publish: should be "
-            "(PUBLISH topic message)\n";
-
-        return send_all(
+        return enqueue_message(
                 client_fd,
-                error,
-                std::strlen(error)
-                );
+                "Incorrect usage of publish: should be "
+                "(PUBLISH topic message)\n");
     }
     std::string outgoing = "MESSAGE " + topic + " " + payload + "\n";
     std::vector<int> recipients;
@@ -336,28 +298,7 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
     /* Changing this to a model of adding to a queue and handing
      * it off to a thread so that it can be modified in parallel */
     for (int recipient_fd: recipients) {
-        std::shared_ptr<ClientState> state;
-
-        {
-            std::lock_guard<std::mutex> lock(clients_mutex_);
-            
-            auto it = clients_.find(recipient_fd);
-
-            if(it == clients_.end()) {
-                continue;
-            }
-
-            state = it->second;
-        }
-        
-        /* This lock here is needed for the publisher pushing in,
-         * sender popping, and disconnect setting disconnect to false */
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            state->outbound.push(outgoing);
-        }
-
-        state->cv.notify_one();
+        enqueue_message(recipient_fd, outgoing);
     }
     return true;
 }
@@ -374,12 +315,13 @@ void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
                     || !state->connected;
                     });
 
-        if (!state->connected && state->outbound.empty()) {
+        if (!state->connected) {
             break;
         }
 
         std::string message = state->outbound.front();
         state->outbound.pop();
+        state->queued_bytes -= message.size();
 
         // Unlock it (The lock is in the cv wait above)
         lock.unlock();
@@ -389,6 +331,8 @@ void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
                     message.data(),
                     message.size()
                     )) {
+            handle_disconnect(client_fd);
+            shutdown(client_fd, SHUT_RDWR);
             break;
         }
     }
@@ -396,7 +340,7 @@ void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
 
 bool Broker::enqueue_message(int client_fd, const std::string& message) {
     std::shared_ptr<ClientState> state;
-
+    bool disconnect_client = false;
     {
         std::lock_guard<std::mutex> lock(clients_mutex_);
 
@@ -408,4 +352,28 @@ bool Broker::enqueue_message(int client_fd, const std::string& message) {
 
         state = it->second;
     }
+
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+
+        if (!state->connected) {
+            return false;
+        }
+        
+        if (state->queued_bytes + message.size() > MAX_QUEUED_BYTES) {
+            state->connected = false;
+            disconnect_client = true;
+        } else {
+            state->outbound.push(message);
+            state->queued_bytes += message.size();
+        }
+    }
+
+    state->cv.notify_one();
+
+    if (disconnect_client) {
+        shutdown(client_fd, SHUTRDWR);
+        return false;
+    }
+    return true;
 }
