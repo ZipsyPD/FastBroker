@@ -32,6 +32,9 @@ private:
     // Sender loop that uses the conditional
     void sender_loop(int client_fd, std::shared_ptr<ClientState> state);
 
+    // General function for inputting into buffer
+    bool enqueue_message(int client_fd, const std::string& message);
+
     void handle_client(int client_fd);
     bool send_all(int client_fd, const char* data, std::size_t length);
     // was about to use a const char* here but not doing that parsing

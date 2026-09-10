@@ -86,6 +86,8 @@ void Broker::run() {
 
     } 
 }
+
+// Thread for handling incoming messages
 void Broker::handle_client(int client_fd){ 
     std::cout << "Client connected with fd: " << client_fd << '\n';
     char buffer[1024]{};
@@ -235,10 +237,34 @@ bool Broker::handle_subscribe(int client_fd, const std::string& call){
 }
 
 void Broker::handle_disconnect(int client_fd){
+    std::shared_ptr<ClientState> state;
+
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+
+        auto it = clients_.find(client_fd);
+
+        if(it != clients_.end()) {
+            /* The shared ptr here keeps it alive
+             * even if erased from map */
+            state = it->second;
+            clients_.erase(it);
+        }
+    }
+
+    if (state) {
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->connected = false;
+        }
+
+        state->cv.notify_one();
+    }
+
     {
         std::lock_guard<std::mutex> lock(subscribers_mutex_);
 
-        for (auto& [topic, subscribers] : subscribers_) {
+        for(auto& [topic, subscribers] : subscribers_) {
             subscribers.erase(client_fd);
         }
     }
@@ -303,7 +329,7 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
 
         if (it != subscribers_.end()) {
             for (int fd: it->second) {
-                recipients.push_back(recipient_fd);
+                recipients.push_back(fd);
             }
         }
     }
@@ -315,7 +341,7 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
         {
             std::lock_guard<std::mutex> lock(clients_mutex_);
             
-            auto it = client_.find(recipient_fd);
+            auto it = clients_.find(recipient_fd);
 
             if(it == clients_.end()) {
                 continue;
@@ -336,10 +362,13 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
     return true;
 }
 
+// Thread for handling outgoing messages
 void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
     while (true) {
         std::unique_lock<std::mutex> lock(state->mutex);
 
+        // This here sleeps and wakes only when there's work
+        // This saves CPU!
         state->cv.wait(lock, [&] {
                 return !state->outbound.empty()
                     || !state->connected;
@@ -352,7 +381,8 @@ void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
         std::string message = state->outbound.front();
         state->outbound.pop();
 
-        lock.unlock;
+        // Unlock it (The lock is in the cv wait above)
+        lock.unlock();
 
         if (!send_all(
                     client_fd,
@@ -361,5 +391,21 @@ void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
                     )) {
             break;
         }
+    }
+}
+
+bool Broker::enqueue_message(int client_fd, const std::string& message) {
+    std::shared_ptr<ClientState> state;
+
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex_);
+
+        auto it = clients_.find(client_fd);
+
+        if(it == clients_.end()) {
+            return false;
+        }
+
+        state = it->second;
     }
 }
