@@ -372,7 +372,9 @@ bool Broker::enqueue_message(int client_fd, const std::string& message) {
     state->cv.notify_one();
 
     if (disconnect_client) {
-        shutdown(client_fd, SHUTRDWR);
+        std::cout << "Backpressure disconnect fd ="
+            << client_fd << '\n';
+        shutdown(client_fd, SHUT_RDWR);
         return false;
     }
     return true;

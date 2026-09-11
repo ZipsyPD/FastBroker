@@ -35,12 +35,17 @@ private:
     std::unordered_map<int, std::shared_ptr<ClientState>> clients_;
     std::mutex clients_mutex_;
 
-    // Sender loop that uses the conditional
+    /* The antithesis to the handle_client in that it writes
+     * BACK to the socket of a client. Mainly consumes from 
+     * their queue */
     void sender_loop(int client_fd, std::shared_ptr<ClientState> state);
 
     // General function for inputting into buffer
     bool enqueue_message(int client_fd, const std::string& message);
 
+    /* This is an important function as this handles
+     * receives FROM a connected client. So handling command line
+     * input from a connected client */
     void handle_client(int client_fd);
     bool send_all(int client_fd, const char* data, std::size_t length);
     // was about to use a const char* here but not doing that parsing
