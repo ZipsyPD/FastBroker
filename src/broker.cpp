@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <cstring>
+#include <fstream>
 
 #include "broker/broker.hpp"
 
@@ -281,6 +282,14 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
                 "Incorrect usage of publish: should be "
                 "(PUBLISH topic message)\n");
     }
+
+    if (!persist_message(topic, payload)) {
+        return enqueue_message(
+                client_fd,
+                "Failed to persist message\n"
+                );
+    }
+
     std::string outgoing = "MESSAGE " + topic + " " + payload + "\n";
     std::vector<int> recipients;
 
@@ -375,6 +384,25 @@ bool Broker::enqueue_message(int client_fd, const std::string& message) {
         std::cout << "Backpressure disconnect fd ="
             << client_fd << '\n';
         shutdown(client_fd, SHUT_RDWR);
+        return false;
+    }
+    return true;
+}
+
+// Persistence handling
+bool Broker::persist_message(const std::string& topic, const std::string& payload){
+    std::lock_guard<std::mutex> lock(persistence_mutex_);
+    std::ofstream file("logs/" + topic + ".log", std::ios::app);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open log for topic: "
+            << topic << '\n';
+        return false;
+    }
+
+    file << payload << '\n';
+    if (!file) {
+        std::cerr << "Failed to persist message for topic: "
+            << topic << '\n';
         return false;
     }
     return true;

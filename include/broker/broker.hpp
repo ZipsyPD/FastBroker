@@ -15,6 +15,7 @@ public:
     void run();
 
 private:
+    // Per client state handling
     struct ClientState {
         // Messages waiting to be sent to client
         std::queue<std::string> outbound;
@@ -28,34 +29,56 @@ private:
         bool connected = true;
     };
 
-    // Max queue byte limit
     static constexpr std::size_t MAX_QUEUED_BYTES = 1024 * 1024;
 
-    // Holding client->clientState pairs
-    std::unordered_map<int, std::shared_ptr<ClientState>> clients_;
-    std::mutex clients_mutex_;
+// ----------------------------------------------------------
+    // Connection lifecycle
+    /* This is an important function as this handles
+     * receives FROM a connected client. So handling command line
+     * input from a connected client */
+    void handle_client(int client_fd);
 
     /* The antithesis to the handle_client in that it writes
      * BACK to the socket of a client. Mainly consumes from 
      * their queue */
     void sender_loop(int client_fd, std::shared_ptr<ClientState> state);
 
-    // General function for inputting into buffer
+    bool send_all(int client_fd, const char* data, std::size_t length);
+
     bool enqueue_message(int client_fd, const std::string& message);
 
-    /* This is an important function as this handles
-     * receives FROM a connected client. So handling command line
-     * input from a connected client */
-    void handle_client(int client_fd);
-    bool send_all(int client_fd, const char* data, std::size_t length);
-    // was about to use a const char* here but not doing that parsing
-    bool handle_command(int client_fd, const std::string& call);
-    bool handle_ping(int client_fd, const std::string& args);
-    bool handle_subscribe(int client_fd, const std::string& args);
     void handle_disconnect(int client_fd);
+
+// ----------------------------------------------------------
+    // Protocol handling
+    bool handle_command(int client_fd, const std::string& call);
+
+    bool handle_ping(int client_fd, const std::string& args);
+
+    bool handle_subscribe(int client_fd, const std::string& args);
+
     bool handle_publish(int client_fd, const std::string& args);
+
+// ----------------------------------------------------------
+    // Socket states
     int port_;
     int server_fd_;
+
+// ----------------------------------------------------------
+    // Connected clients
+    std::unordered_map<int, std::shared_ptr<ClientState>> clients_;
+    std::mutex clients_mutex_;
+
+// ----------------------------------------------------------
+    // Subscriber handling
     std::unordered_map<std::string, std::unordered_set<int>> subscribers_;
+
     std::mutex subscribers_mutex_;
+
+// ----------------------------------------------------------
+    // Persistence
+    
+    bool persist_message(const std::string& topic, const std::string& payload);
+
+    std::mutex persistence_mutex_;
 };
