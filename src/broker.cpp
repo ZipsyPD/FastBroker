@@ -22,6 +22,7 @@ Broker::Broker(int port):
     }
 
 void Broker::run() {
+    initialize_offsets();
     server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd_ == -1){
         std::cerr << "Socket creation failed\n";
@@ -392,6 +393,7 @@ bool Broker::enqueue_message(int client_fd, const std::string& message) {
 // Persistence handling
 bool Broker::persist_message(const std::string& topic, const std::string& payload){
     std::lock_guard<std::mutex> lock(persistence_mutex_);
+    std::size_t offset = next_offsets_[topic];
     std::ofstream file("logs/" + topic + ".log", std::ios::app);
     if (!file.is_open()) {
         std::cerr << "Failed to open log for topic: "
@@ -399,11 +401,16 @@ bool Broker::persist_message(const std::string& topic, const std::string& payloa
         return false;
     }
 
-    file << payload << '\n';
+    file << offset << ' ' << payload << '\n';
     if (!file) {
         std::cerr << "Failed to persist message for topic: "
             << topic << '\n';
         return false;
     }
+    ++next_offsets_[topic];
     return true;
+}
+
+void Broker::initialize_offsets() {
+
 }

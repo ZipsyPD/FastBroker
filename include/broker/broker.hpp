@@ -81,4 +81,9 @@ private:
     bool persist_message(const std::string& topic, const std::string& payload);
 
     std::mutex persistence_mutex_;
+
+    // For each log file
+    std::unordered_map<std::string, std::size_t> next_offsets_;
+
+    void initialize_offsets();
 };
