@@ -86,4 +86,6 @@ private:
     std::unordered_map<std::string, std::size_t> next_offsets_;
 
     void initialize_offsets();
+
+    void replay_messages(const std::string& topic, std::size_t offset);
 };
