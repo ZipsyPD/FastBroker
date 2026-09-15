@@ -13,6 +13,8 @@
 #include <string>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
+#include <sstream>
 
 #include "broker/broker.hpp"
 
@@ -412,5 +414,31 @@ bool Broker::persist_message(const std::string& topic, const std::string& payloa
 }
 
 void Broker::initialize_offsets() {
+    std::filesystem::create_directories("logs");
 
+    for (const auto& entry: std::filesystem::directory_iterator("logs")) {
+        if (entry.path().extension() != ".log"){
+            continue;
+        }
+        std::string topic = entry.path().stem().string();
+        std::ifstream file(entry.path());
+        if (!file.is_open()) {
+            std::cerr << "Failed to open log file: "
+                << entry.path() << '\n';
+            continue;
+        }
+        std::string line;
+        std::size_t next_offset = 0;
+        while (std::getline(file, line)){
+            std::istringstream stream(line);
+
+            std::size_t offset;
+            if (!(stream >> offset)) {
+                continue;
+            }
+
+            next_offset = offset + 1;
+        }
+        next_offsets_[topic] = next_offset;
+    }
 }
