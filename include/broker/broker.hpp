@@ -53,11 +53,13 @@ private:
     // Protocol handling
     bool handle_command(int client_fd, const std::string& call);
 
-    bool handle_ping(int client_fd, const std::string& args);
+    bool handle_ping(int client_fd, const std::string& call);
 
-    bool handle_subscribe(int client_fd, const std::string& args);
+    bool handle_subscribe(int client_fd, const std::string& call);
 
-    bool handle_publish(int client_fd, const std::string& args);
+    bool handle_publish(int client_fd, const std::string& call);
+
+    bool handle_replay(int client_fd, const std::string& call);
 
 // ----------------------------------------------------------
     // Socket states

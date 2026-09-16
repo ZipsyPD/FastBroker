@@ -169,9 +169,12 @@ bool Broker::handle_command(int client_fd, const std::string& call){
         return handle_subscribe(client_fd, call);
     } else if (command == "PUBLISH") {
         return handle_publish(client_fd, call);
+    } else if (command == "REPLAY") {
+        return handle_replay(client_fd, call);
     } else {
         std::string unknown = 
-            "Unknown command. Available commands are (PUBLISH _ _, PING, SUBSCRIBE _)\n";
+            "Unknown command. Available commands are "
+            "(PUBLISH _ _, PING, SUBSCRIBE _, REPLAY _ _)\n";
         return enqueue_message(client_fd, unknown);    
     }
 }
@@ -213,6 +216,62 @@ bool Broker::handle_subscribe(int client_fd, const std::string& call){
     if (!enqueue_message(client_fd, confirmation)) {
         std::cerr << "Client subscribed but confirmation not sent";
         return false;
+    }
+    return true;
+}
+
+bool Broker::handle_replay(int client_fd, const std::string& call){
+    std::size_t first_space = call.find(' ');
+    if (first_space == std::string::npos){
+        return enqueue_message(
+                client_fd,
+                "Incorrect usage of replay: should be "
+                "(REPLAY TOPIC OFFSET)\n"
+                );
+    }
+
+    std::size_t second_space = call.find(' ', first_space + 1);
+
+    if (second_space == std::string::npos) {
+        return enqueue_message(
+                client_fd,
+                "Incorrect usage of replay: should be "
+                "(REPLAY TOPIC OFFSET)\n"
+                );
+    }
+
+    std::string topic = call.substr(
+            first_space + 1,
+            second_space - first_space - 1
+            );
+
+    std::string offset = 
+        call.substr(second_space + 1);
+
+    if (topic.empty() || offset.empty()) {
+        return enqueue_message(
+                client_fd,
+                "Incorrect usage of replay: should be "
+                "(REPLAY TOPIC OFFSET)\n"
+                );
+    }
+
+    std::size_t offset_t;
+
+    try {
+        offset_t = std::stoull(offset);
+    } catch (const std::exception&) {
+        return enqueue_message(
+                client_fd,
+                "Replay offset must be a number\n"
+                ); 
+    }
+
+    if (!replay_messages(client_fd, topic, offset_t)) {
+        return enqueue_message(
+                client_fd,
+                "Failed to replay messages\n"
+                );
     }
     return true;
 }
@@ -461,21 +520,27 @@ bool Broker::replay_messages(int client_fd, const std::string& topic, std::size_
             continue;
         }
 
-        std::size_t check_offset = 
-            std::stoull(line.substr(0, space));
+        try {
+            std::size_t check_offset = 
+                std::stoull(line.substr(0, space));
 
-        if (check_offset < offset) {
+            if (check_offset < offset) {
+                continue;
+            }
+
+            std::string payload = 
+                line.substr(space + 1);
+
+            std::string outgoing = 
+                "MESSAGE " + topic + " " + payload + "\n";
+
+            if (!enqueue_message(client_fd, outgoing)) {
+                return false;
+            }
+        } catch (const std::exception&) {
+            std ::cerr << "Skipping malformed log line: "
+                << line << '\n';
             continue;
-        }
-
-        std::string payload = 
-            line.substr(space + 1);
-
-        std::string outgoing = 
-            "MESSAGE " + topic + " " + payload + "\n";
-
-        if (!enqueue_message(client_fd, outgoing)) {
-            return false;
         }
     }
 
