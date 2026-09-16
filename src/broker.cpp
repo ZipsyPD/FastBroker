@@ -445,23 +445,39 @@ void Broker::initialize_offsets() {
 
 bool Broker::replay_messages(int client_fd, const std::string& topic, std::size_t offset) {
     std::string file_path = "logs/" + topic + ".log";
-    std::ifstream file(file_path)
-    if (!file.is_open) {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
         std::cerr << "Failed to open log file: "
             << file_path << '\n';
-        return;
+        return false;
     }
 
     // Go throughe very line of the log files
     std::string line;
     while (std::getline(file, line)) {
-        std::istringstream stream(line);
+        std::size_t space = line.find(' ');
 
-        // Checking if offset is equal to requested replay
-        std::size_t check_offset;
-        if (!(stream >> check_offset) || (check_offset != offset)) {
+        if (space == std::string::npos) {
             continue;
         }
 
-        return enqueue_message(
-                client_fd,
+        std::size_t check_offset = 
+            std::stoull(line.substr(0, space));
+
+        if (check_offset < offset) {
+            continue;
+        }
+
+        std::string payload = 
+            line.substr(space + 1);
+
+        std::string outgoing = 
+            "MESSAGE " + topic + " " + payload + "\n";
+
+        if (!enqueue_message(client_fd, outgoing)) {
+            return false;
+        }
+    }
+
+    return true;
+}

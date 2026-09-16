@@ -87,5 +87,5 @@ private:
 
     void initialize_offsets();
 
-    void replay_messages(const std::string& topic, std::size_t offset);
+    bool replay_messages(int client_fd, const std::string& topic, std::size_t offset);
 };
