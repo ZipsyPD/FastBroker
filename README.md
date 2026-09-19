@@ -132,4 +132,4 @@ more forgiving in memory safety. Oh well. It was very fun to experiment with at 
 but benchmarking was rather annoying. 
 
 It always feels bad to have to stop working on a project. I will return one day
-to advance this further though. I feel as if this is my pet now. I will return! 
+to advance this further though! 
