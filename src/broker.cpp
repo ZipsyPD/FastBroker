@@ -85,6 +85,8 @@ void Broker::run() {
                 state
                 );
 
+        // Each client gets independent receive/send workers so one slow
+        // connection does not block the server's accept loop.
         receiver.detach();
         sender.detach();
 
@@ -113,8 +115,11 @@ void Broker::handle_client(int client_fd){
         if (bytes_received == 0) {
             break;
         }
+        // TCP is a byte stream, so a recv() may contain a partial command
+        // or multiple commands. Accumulate bytes until a newline-delimited
+        // command is complete.
         pending.append(buffer, bytes_received);
-        // Append one recv to the "pending" stream
+
         for (
             std::size_t place = pending.find('\n'); 
             place != std::string::npos; 
@@ -345,6 +350,8 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
                 "(PUBLISH topic message)\n");
     }
 
+    // Persist before fanout so a message is recorded before subscribers
+    // are told it was published.
     if (!persist_message(topic, payload)) {
         return enqueue_message(
                 client_fd,
@@ -366,8 +373,8 @@ bool Broker::handle_publish(int client_fd, const std::string& call){
             }
         }
     }
-    /* Changing this to a model of adding to a queue and handing
-     * it off to a thread so that it can be modified in parallel */
+    // Queue delivery instead of sending directly so a slow subscriber
+    // does not block the publisher thread.
     for (int recipient_fd: recipients) {
         enqueue_message(recipient_fd, outgoing);
     }
@@ -379,8 +386,8 @@ void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
     while (true) {
         std::unique_lock<std::mutex> lock(state->mutex);
 
-        // This here sleeps and wakes only when there's work
-        // This saves CPU!
+        // Sleep without busy-waiting until a message is queued or the
+        // client disconnects. wait() temporarily releases state->mutex.
         state->cv.wait(lock, [&] {
                 return !state->outbound.empty()
                     || !state->connected;
@@ -394,7 +401,7 @@ void Broker::sender_loop(int client_fd, std::shared_ptr<ClientState> state){
         state->outbound.pop();
         state->queued_bytes -= message.size();
 
-        // Unlock it (The lock is in the cv wait above)
+        // Do not hold the queue mutex during socket I/O.
         lock.unlock();
 
         if (!send_all(
@@ -431,6 +438,8 @@ bool Broker::enqueue_message(int client_fd, const std::string& message) {
             return false;
         }
         
+        // Bound each client's outbound queue. If a consumer cannot keep up,
+        // disconnect it rather than allowing memory usage to grow indefinitely.
         if (state->queued_bytes + message.size() > MAX_QUEUED_BYTES) {
             state->connected = false;
             disconnect_client = true;
@@ -452,6 +461,8 @@ bool Broker::enqueue_message(int client_fd, const std::string& message) {
 }
 
 // Persistence handling
+// Append each message as "<offset> <payload>" so clients can later
+// replay a topic beginning at a specific offset.
 bool Broker::persist_message(const std::string& topic, const std::string& payload){
     std::lock_guard<std::mutex> lock(persistence_mutex_);
     std::size_t offset = next_offsets_[topic];
@@ -472,6 +483,8 @@ bool Broker::persist_message(const std::string& topic, const std::string& payloa
     return true;
 }
 
+// Recover the next offset for each topic from existing logs before
+// accepting clients, so offsets continue across broker restarts.
 void Broker::initialize_offsets() {
     std::filesystem::create_directories("logs");
 
@@ -511,7 +524,6 @@ bool Broker::replay_messages(int client_fd, const std::string& topic, std::size_
         return false;
     }
 
-    // Go throughe very line of the log files
     std::string line;
     while (std::getline(file, line)) {
         std::size_t space = line.find(' ');
